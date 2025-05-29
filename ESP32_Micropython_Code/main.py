@@ -143,4 +143,3 @@ while True:
     counter += 1    # increment counter
     sleep(0.02)     # wait 0.02 seconds
    
-
