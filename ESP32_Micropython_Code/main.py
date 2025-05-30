@@ -49,6 +49,7 @@ uart = UART(1, 115200, tx=1, rx=3)
 line_left = False
 line_center = False
 line_right = False
+obstacle = False
 
 # Variables to implement the line-following state machine
 current_state = 'forward'
@@ -69,26 +70,33 @@ while True:
         # Then split them in the same order used in Webots and update sensor status
 
         # line_left
-        if msg_str[-4:-3] == '1':
+        if msg_str[-5] == '1':
             line_left = True
             led_blue.on()
         else:
             line_left = False
             led_blue.off()
         # line_center
-        if msg_str[-3:-2] == '1':
+        if msg_str[-4] == '1':
             line_center = True
             led_green.on()
         else:
             line_center = False
             led_green.off()
         # line_right
-        if msg_str[-2:-1] == '1':
+        if msg_str[-3] == '1':
             line_right = True
             led_red.on()
         else:
             line_right = False
             led_red.off()
+        # obstacle
+        if msg_str[-2] == '1':
+            obstacle = True
+            led_yellow.on()
+        else:
+            obstacle = False
+            led_yellow.off()
 
 
     ##################   Think   ###################
@@ -103,6 +111,9 @@ while True:
             current_state = 'turn_left'
             state_updated = True
         elif line_left and line_right and line_center: # lost the line
+            current_state = 'turn_left'
+            state_updated = True
+        elif obstacle:
             current_state = 'turn_left'
             state_updated = True
         elif button_right.value() == True:
@@ -129,7 +140,7 @@ while True:
         led_board.value(1)
         if counter >= COUNTER_STOP:
             current_state = 'forward'
-            state_update = True
+            state_updated = True
             led_board.value(0)
             
     
@@ -143,3 +154,4 @@ while True:
     counter += 1    # increment counter
     sleep(0.02)     # wait 0.02 seconds
    
+
