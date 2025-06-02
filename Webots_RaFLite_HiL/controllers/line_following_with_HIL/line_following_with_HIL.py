@@ -1,65 +1,32 @@
-"""line_following_with_HIL controller."""
-# This program implements Hardware-in-the-Loop simulation of the e-puck robot.
-# Ground sensor data is pre-processed and transfered to an external board 
-# that must decide the next state of the robot. Communication between Webots
-# and the external board is implemented via Serial port.
-
-# Tested on Webots R2023a, on Windows 11 running Python 3.10.5 64-bit
-# communicating with MicroPython v1.25.0 on generic ESP32 module with ESP32
-
-# Author: Felipe N. Martins
-# Date: 29 November 2024
-# Last update: 20 May 2025
-
 from controller import Robot
-import numpy as np
-
-#-------------------------------------------------------
-# Open serial port to communicate with the microcontroller
-
 import serial
+import math
+
 try:
-    # Change the port parameter according to your system
-    ser =  serial.Serial(port='COM3', baudrate=115200, timeout=5) 
+    ser = serial.Serial(port='COM4', baudrate=115200, timeout=5)
 except:
-    print("Communication failed. Check the cable connections and serial settings 'port' and 'baudrate'.")
+    print("Communication failed. Check the cable connections and serial settings.")
     raise
-    
-#-------------------------------------------------------
-# Initialize variables
 
 MAX_SPEED = 6.28
 speed = 0.4 * MAX_SPEED
 
-# create the Robot instance for the simulation.
 robot = Robot()
+timestep = int(robot.getBasicTimeStep())
 
-# get the time step of the current world.
-timestep = int(robot.getBasicTimeStep())   # [ms]
+# Devices
+ps = [robot.getDevice(name) for name in ['ps0','ps1','ps2','ps3','ps4','ps5','ps6','ps7']]
+for sensor in ps:
+    sensor.enable(timestep)
 
-# states
-states = ['forward', 'turn_right', 'turn_left', 'stop']
-current_state = 'forward'
+gs = [robot.getDevice(name) for name in ['gs0','gs1','gs2']]
+for sensor in gs:
+    sensor.enable(timestep)
 
-#-------------------------------------------------------
-# Initialize devices
+encoders = [robot.getDevice(name) for name in ['left wheel sensor', 'right wheel sensor']]
+for encoder in encoders:
+    encoder.enable(timestep)
 
-# proximity sensors
-# Ref.: https://cyberbotics.com/doc/guide/tutorial-4-more-about-controllers?tab-language=python#understand-the-e-puck-model
-ps = []
-psNames = ['ps0', 'ps1', 'ps2', 'ps3', 'ps4', 'ps5', 'ps6', 'ps7']
-for i in range(8):
-    ps.append(robot.getDevice(psNames[i]))
-    ps[i].enable(timestep)
-
-# ground sensors
-gs = []
-gsNames = ['gs0', 'gs1', 'gs2']
-for i in range(3):
-    gs.append(robot.getDevice(gsNames[i]))
-    gs[i].enable(timestep)
-
-# motors    
 leftMotor = robot.getDevice('left wheel motor')
 rightMotor = robot.getDevice('right wheel motor')
 leftMotor.setPosition(float('inf'))
@@ -67,79 +34,108 @@ rightMotor.setPosition(float('inf'))
 leftMotor.setVelocity(0.0)
 rightMotor.setVelocity(0.0)
 
-#-------------------------------------------------------
-# Main loop:
-# perform simulation steps until Webots is stopping the controller
-# Implements the see-think-act cycle
+# Odometry parameters (must match ESP32)
+R = 0.0205  # wheel radius [m] (20.5mm)
+D = 0.052   # wheel base [m] (52mm)
+
+# Pose initialization (must match ESP32)
+x = 0.0
+y = 0.0
+phi = 0.0
+
+prev_left_enc = None
+prev_right_enc = None
+current_state = 'forward'
+
+def normalize_angle(angle):
+    while angle > math.pi:
+        angle -= 2 * math.pi
+    while angle <= -math.pi:
+        angle += 2 * math.pi
+    return angle
 
 while robot.step(timestep) != -1:
-
-    ############################################
-    #                  See                     #
-    ############################################
-
-    # Update sensor readings
-    gsValues = []
-    for i in range(3):
-        gsValues.append(gs[i].getValue())
-    
+    # Read sensors
+    gsValues = [gs[i].getValue() for i in range(3)]
     ps0_value = ps[0].getValue()
+    left_enc = encoders[0].getValue()
+    right_enc = encoders[1].getValue()
+    
+    dt = timestep / 1000.0  # convert ms to seconds
+    
+    # Initialize previous encoder values at first step
+    if prev_left_enc is None:
+        prev_left_enc = left_enc
+        prev_right_enc = right_enc
+        continue  # skip first iteration
 
-    # Process sensor data
+    # Calculate delta encoders
+    delta_left = left_enc - prev_left_enc
+    delta_right = right_enc - prev_right_enc
+
+    # Update previous encoder values
+    prev_left_enc = left_enc
+    prev_right_enc = right_enc
+
+    # Calculate wheel angular velocities (rad/s)
+    wl = delta_left / dt
+    wr = delta_right / dt
+
+    # Compute linear and angular velocity of robot
+    u = R / 2.0 * (wr + wl)   # linear velocity (m/s)
+    w = R / D * (wr - wl)     # angular velocity (rad/s)
+
+    # Update pose using improved integration
+    phi_new = normalize_angle(phi + w * dt)
+    avg_phi = (phi + phi_new) / 2  # use average angle for better position integration
+    delta_x = u * math.cos(avg_phi) * dt
+    delta_y = u * math.sin(avg_phi) * dt
+    
+    x += delta_x
+    y += delta_y
+    phi = phi_new
+
+    # Compose sensor flags (0=line detected, 1=no line)
     line_right = gsValues[0] > 600
     line_center = gsValues[1] > 600
     line_left = gsValues[2] > 600
     obstacle = ps0_value > 80
-    
-    # Build the message to be sent to the ESP32 with the ground
-    # sensor data: 0 = line detected; 1 = line not detected
+
+    # Create message with format: "LLCR|LEFT_ENC,RIGHT_ENC,DT"
     message = ''
     message += '1' if line_left else '0'
     message += '1' if line_center else '0'
     message += '1' if line_right else '0'
     message += '1' if obstacle else '0'
-    msg_bytes = bytes(message + '\n', 'UTF-8')
+    message += f'|{left_enc:.4f},{right_enc:.4f},{dt:.4f}\n'
     
+    # Send to ESP32
+    ser.write(message.encode('utf-8'))
 
-    ############################################
-    #                 Think                    #
-    ############################################
-
-    # Serial communication: if something is received, then update the current state
+    # Read commands from ESP32
     if ser.in_waiting:
-        value = str(ser.readline(), 'UTF-8')[:-1]  # ignore the last character
-        current_state = value
+        value = ser.readline().decode('utf-8').strip()
+        if value in ['forward', 'turn_right', 'turn_left', 'stop']:
+            current_state = value
 
-    # Update speed according to the current state
+    # Set motor speeds according to state
     if current_state == 'forward':
         leftSpeed = speed
         rightSpeed = speed
-            
-    if current_state == 'turn_right':
+    elif current_state == 'turn_right':
         leftSpeed = 0.5 * speed
-        rightSpeed = 0 * speed
-
-    if current_state == 'turn_left':
-        leftSpeed = 0 * speed
+        rightSpeed = 0
+    elif current_state == 'turn_left':
+        leftSpeed = 0
         rightSpeed = 0.5 * speed
-        
-    if current_state == 'stop':
-        leftSpeed = 0.0
-        rightSpeed = 0.0
- 
+    elif current_state == 'stop':
+        leftSpeed = 0
+        rightSpeed = 0
 
-    ############################################
-    #                  Act                     #
-    ############################################
-
-    # Update velocity commands for the motors
     leftMotor.setVelocity(leftSpeed)
     rightMotor.setVelocity(rightSpeed)
-   
-    # Print sensor message and current state for debugging
-    print(f'Sensor message: {msg_bytes} - Current state: {current_state}')
 
-    # Send message to the microcontroller 
-    ser.write(msg_bytes)  
+    # Print only the estimated pose (no ground truth needed in HiL)
+    print(f'Odometry: x={x:.4f}, y={y:.4f}, phi={phi:.4f}')
 
 ser.close()
