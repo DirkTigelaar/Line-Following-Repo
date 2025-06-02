@@ -1,157 +1,134 @@
-# Implements communication with Webots via Serial over USB.
-# Works with the "line_following_with_HIL" controller in Webots.
-
-# Tested with MicroPython v1.25.0 on ESP32 WROOM 32 dev kit board
-# communicating with Webots R2023a, on Windows 11 running Python 3.10.5 64-bit
-
-# To use ulab, you need to install a micropython interpreter that contains this
-# module. In my tests, I used the this one:
-# https://gitlab.com/rcolistete/micropython-firmwares/-/blob/master/ESP32/v1.12_with_ulab/ulab_v0.54.0_2020-07-29/Generic_flash-4MB/esp32_idf4_ulab_dp_thread_v1.12-663-gea4670d5a_2020-07-29.bin
-
-# Author: Felipe N. Martins
-# Date: 27 May 2025
-
-
-###### Close Thonny after start running this code #######
-# This is necessary because the serial port cannot be used by
-# two different programs (Thonny and Webots) at the same time.
-
-
 from machine import Pin, UART
-from time import sleep
-# import ulab
+from time import sleep, ticks_ms
+import math
 
-
-# Set serial to UART0 to guarantee USB communication in case of reset
-# uart = UART(0, 115200, tx=1, rx=3)
-
-led_board = Pin(2, Pin.OUT)     # Define ESP32 onboard LED
-led_yellow = Pin(4, Pin.OUT)
-led_blue = Pin(23, Pin.OUT)
-led_green = Pin(22, Pin.OUT)
-led_red = Pin(21, Pin.OUT)
-button_left = Pin(34, Pin.IN, Pin.PULL_DOWN)
-button_right = Pin(35, Pin.IN, Pin.PULL_DOWN)
-# Button value is normally False. Returns True when clicked.
-
-# Wait for the button click before changing the serial port to UART1.
-# During the wait period, the program can be stopped using the STOP button.
-print("Click the button on the ESP32 to continue. Then, close Thonny and run the Webots simulation.")
-print("Or click STOP in Thonny to return to the REPL.")
-while button_left() == False:
-    sleep(0.25)
-    led_board.value(not led_board())
-
-# Set serial to UART1 using the same pins as UART0 to communicate via USB
+# Setup UART1 for communication with Webots
 uart = UART(1, 115200, tx=1, rx=3)
 
-# Initial status of the line sensor: updated by Webots via serial
-line_left = False
-line_center = False
-line_right = False
-obstacle = False
+# Constants for odometry (MUST MATCH WEBOTS)
+R = 0.0205   # wheel radius [m] (20.5mm)
+D = 0.052    # wheel base [m] (52mm)
 
-# Variables to implement the line-following state machine
+# Initial robot pose (MUST MATCH WEBOTS)
+x = 0.0
+y = 0.0
+phi = 0.0
+
+# Previous encoder readings
+prev_left_enc = None
+prev_right_enc = None
+
+# State machine variables
 current_state = 'forward'
-counter = 0
-COUNTER_MAX = 5
-COUNTER_STOP = 50
+last_state_change = ticks_ms()
 state_updated = True
 
+def parse_message(msg):
+    try:
+        # Expected format: "LLCR|LEFT_ENC,RIGHT_ENC,DT"
+        if not msg or '|' not in msg:
+            return None
+            
+        sensors_str, enc_str = msg.strip().split('|')
+        if len(sensors_str) < 4 or ',' not in enc_str:
+            return None
+            
+        line_left = (sensors_str[0] == '1')
+        line_center = (sensors_str[1] == '1')
+        line_right = (sensors_str[2] == '1')
+        obstacle = (sensors_str[3] == '1')
+        
+        enc_parts = enc_str.split(',')
+        if len(enc_parts) != 3:
+            return None
+            
+        left_enc = float(enc_parts[0])
+        right_enc = float(enc_parts[1])
+        dt = float(enc_parts[2])
+        
+        return line_left, line_center, line_right, obstacle, left_enc, right_enc, dt
+    except:
+        return None
+
+def normalize_angle(angle):
+    while angle > math.pi:
+        angle -= 2 * math.pi
+    while angle <= -math.pi:
+        angle += 2 * math.pi
+    return angle
+
+def update_pose(u, w, x, y, phi, dt):
+    phi_new = normalize_angle(phi + w * dt)
+    avg_phi = (phi + phi_new) / 2  # use average angle for better integration
+    delta_x = u * math.cos(avg_phi) * dt
+    delta_y = u * math.sin(avg_phi) * dt
+    return x + delta_x, y + delta_y, phi_new
+
 while True:
-    
-    ##################   See   ###################
-    
-    # Check if anything was received via serial to update sensor status
     if uart.any():
-        msg_bytes = uart.read()    # Read all received messages
-        msg_str = str(msg_bytes, 'UTF-8')  # Convert to string
-        # Ignore old messages (Webots can send faster than the ESP32 can process)
-        # Then split them in the same order used in Webots and update sensor status
-
-        # line_left
-        if msg_str[-5] == '1':
-            line_left = True
-            led_blue.on()
-        else:
-            line_left = False
-            led_blue.off()
-        # line_center
-        if msg_str[-4] == '1':
-            line_center = True
-            led_green.on()
-        else:
-            line_center = False
-            led_green.off()
-        # line_right
-        if msg_str[-3] == '1':
-            line_right = True
-            led_red.on()
-        else:
-            line_right = False
-            led_red.off()
-        # obstacle
-        if msg_str[-2] == '1':
-            obstacle = True
-            led_yellow.on()
-        else:
-            obstacle = False
-            led_yellow.off()
-
-
-    ##################   Think   ###################
-
-    # Implement the line-following state machine transitions
-    if current_state == 'forward':
-        counter = 0
-        if line_right and not line_left:
-            current_state = 'turn_right'
-            state_updated = True
-        elif line_left and not line_right:
-            current_state = 'turn_left'
-            state_updated = True
-        elif line_left and line_right and line_center: # lost the line
-            current_state = 'turn_left'
-            state_updated = True
-        elif obstacle:
-            current_state = 'turn_left'
-            state_updated = True
-        elif button_right.value() == True:
-            current_state = 'stop'
+        msg_bytes = uart.readline()
+        if not msg_bytes:
+            continue
+            
+        try:
+            msg_str = msg_bytes.decode('utf-8').strip()
+        except:
+            continue
+            
+        parsed = parse_message(msg_str)
+        if not parsed:
+            continue
+            
+        line_left, line_center, line_right, obstacle, left_enc, right_enc, dt = parsed
+        
+        # Initialize previous encoder values on first run
+        if prev_left_enc is None:
+            prev_left_enc = left_enc
+            prev_right_enc = right_enc
+            continue
+            
+        # Calculate wheel angular velocities (rad/s)
+        wl = (left_enc - prev_left_enc) / dt
+        wr = (right_enc - prev_right_enc) / dt
+        
+        # Update previous encoder values
+        prev_left_enc = left_enc
+        prev_right_enc = right_enc
+        
+        # Compute robot linear (u) and angular (w) speeds
+        u = R / 2 * (wr + wl)
+        w = R / D * (wr - wl)
+        
+        # Update robot pose
+        x, y, phi = update_pose(u, w, x, y, phi, dt)
+        
+        # State machine logic
+        new_state = current_state
+        now = ticks_ms()
+        
+        if current_state == 'forward':
+            if line_right and not line_left:
+                new_state = 'turn_right'
+            elif line_left and not line_right:
+                new_state = 'turn_left'
+            elif line_left and line_right and line_center:
+                new_state = 'turn_left'
+            elif obstacle:
+                new_state = 'turn_left'
+                
+        elif current_state in ['turn_right', 'turn_left']:
+            if now - last_state_change > 500:  # 500ms turns
+                new_state = 'forward'
+                
+        # Update state if changed
+        if new_state != current_state:
+            current_state = new_state
+            last_state_change = now
             state_updated = True
             
-    if current_state == 'turn_right':
-        if counter >= COUNTER_MAX:
-            current_state = 'forward'
-            state_updated = True
-        elif button_right.value() == True:
-            current_state = 'stop'
-            state_updated = True
-
-    if current_state == 'turn_left':
-        if counter >= COUNTER_MAX:
-            current_state = 'forward'
-            state_updated = True
-        elif button_right.value() == True:
-            current_state = 'stop'
-            state_updated = True
-            
-    if current_state == 'stop':
-        led_board.value(1)
-        if counter >= COUNTER_STOP:
-            current_state = 'forward'
-            state_updated = True
-            led_board.value(0)
-            
+        # Send new state if updated
+        if state_updated:
+            uart.write((current_state + '\n').encode('utf-8'))
+            state_updated = False
     
-    ##################   Act   ###################
-
-    # Send the new state when updated
-    if state_updated == True:
-        uart.write(current_state + '\n')
-        state_updated = False
-
-    counter += 1    # increment counter
-    sleep(0.02)     # wait 0.02 seconds
-   
-
+    sleep(0.001)  # minimal sleep to prevent CPU overload
