@@ -1,10 +1,10 @@
-# robot_logic_esp32.py - MicroPython code for ESP32
+# main.py - MicroPython code for ESP32
 # This code handles the main robot logic (pathfinding, state machine, PID, odometry)
 # and communicates with Webots via serial.
 
 from machine import Pin, UART
 from time import sleep
-import heapq # heapq is available in MicroPython
+import heapq
 
 # --- Configuration ---
 # Set serial to UART1 using the same pins as UART0 to communicate via USB
@@ -12,7 +12,6 @@ import heapq # heapq is available in MicroPython
 # For many ESP32 dev kits, UART0 (pins 1 and 3) are used for USB serial.
 # If you are using USB-serial for HIL, use UART0.
 # If you are using physical UART pins for HIL, use UART1 or UART2 and adjust pins.
-# Example for UART0 (USB serial):
 uart = UART(1, 115200, tx=1, rx=3)
 
 # Debug LEDs (optional, adjust pins if needed)
@@ -22,7 +21,7 @@ led_blue = Pin(23, Pin.OUT)
 led_green = Pin(22, Pin.OUT)
 led_red = Pin(21, Pin.OUT)
 
-# --- Robot Parameters (copy from Obstakeldetectie_try.py) ---
+# --- Robot Parameters ---
 MAX_SPEED = 6.28 # Max motor speed in rad/s
 R = 0.0205  # Wheel radius [m]
 D = 0.057  # Distance between wheels [m]

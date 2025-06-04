@@ -36,7 +36,7 @@ DEF E_PUCK E-puck {
   hidden position_0_1 622.3099421890196
   hidden rotation_1 0 1 0 5.820053132148379
   hidden rotation_2 0 -1 0 6.008588528939068
-  translation -0.298731 0.354299 -6.22188e-05
+  translation -0.288731 0.354353 -6.22489e-05
   rotation 0.00017497699451987251 0.00017894499439559823 -0.9999999686808697 1.56544
   controller "line_following_with_HIL"
   window "botstudio"
