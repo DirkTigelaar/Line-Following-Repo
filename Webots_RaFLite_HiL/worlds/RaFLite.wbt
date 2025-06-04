@@ -9,8 +9,8 @@ EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2023a/project
 WorldInfo {
 }
 Viewpoint {
-  orientation 0.32096243066312835 0.020097985289069083 -0.9468786559481299 2.7918569826873156
-  position 0.5519030398117566 0.36100622602192906 0.4570901484376967
+  orientation -0.36403475413632724 0.45659767856060035 0.8117864606619 1.7372481636162869
+  position -0.20443399245145444 -0.016586856706076854 0.533580258837829
   follow "e-puck"
 }
 TexturedBackground {
@@ -32,10 +32,12 @@ RectangleArena {
   }
 }
 DEF E_PUCK E-puck {
-  hidden position_0_0 429.6750402783653
-  hidden position_0_1 464.2295159739762
-  hidden rotation_1 0 1 0 2.418439390153435
-  hidden rotation_2 0 -1 0 0.7261967573131793
+  hidden position_0_0 596.4394720070295
+  hidden position_0_1 622.3099421890196
+  hidden rotation_1 0 1 0 5.820053132148379
+  hidden rotation_2 0 -1 0 6.008588528939068
+  translation -0.298731 0.354299 -6.22188e-05
+  rotation 0.00017497699451987251 0.00017894499439559823 -0.9999999686808697 1.56544
   controller "line_following_with_HIL"
   window "botstudio"
   camera_width 40

@@ -1,141 +1,120 @@
+# robot_webots_hil.py - Webots controller for Hardware-in-the-Loop simulation.
+# This code sends sensor data to an external microcontroller and receives motor commands.
+
 from controller import Robot
 import serial
-import math
+import time # Using time module for delays if needed, for serial buffer
+
+# --- Configuration ---
+# IMPORTANT: Change the port parameter according to your system and ESP32 connection
+# On Windows, it's usually COMx (e.g., 'COM11'). On Linux/macOS, it's /dev/ttyUSBx or /dev/tty.usbserial-xxxx
+SERIAL_PORT = 'COM3' #
+BAUDRATE = 115200 #
 
 try:
-    ser = serial.Serial(port='COM4', baudrate=115200, timeout=5)
-except:
-    print("Communication failed. Check the cable connections and serial settings.")
-    raise
+    ser = serial.Serial(port=SERIAL_PORT, baudrate=BAUDRATE, timeout=0.1) # Shorter timeout for faster checks
+    print(f"Successfully connected to serial port {SERIAL_PORT}") #
+except serial.SerialException as e:
+    print(f"ERROR: Could not open serial port {SERIAL_PORT}. Please check if the ESP32 is connected and the port is correct.") #
+    print(f"Error details: {e}") #
+    # Exit Webots simulation gracefully or handle error appropriately
+    raise SystemExit(e) # Exit the controller if serial fails
 
-MAX_SPEED = 6.28
-speed = 0.4 * MAX_SPEED
+# --- Robot Controller Setup (copy from Obstakeldetectie_try.py) ---
+MAX_SPEED = 6.28 #
 
-robot = Robot()
-timestep = int(robot.getBasicTimeStep())
+robot = Robot() #
+timestep = int(robot.getBasicTimeStep()) #
 
-# Devices
-ps = [robot.getDevice(name) for name in ['ps0','ps1','ps2','ps3','ps4','ps5','ps6','ps7']]
-for sensor in ps:
-    sensor.enable(timestep)
+print("Webots HIL Robot Controller Started.") #
 
-gs = [robot.getDevice(name) for name in ['gs0','gs1','gs2']]
-for sensor in gs:
-    sensor.enable(timestep)
+# Initialize devices
+ps = [robot.getDevice(f'ps{i}') for i in range(8)] #
+for sensor in ps: #
+    sensor.enable(timestep) #
 
-encoders = [robot.getDevice(name) for name in ['left wheel sensor', 'right wheel sensor']]
-for encoder in encoders:
-    encoder.enable(timestep)
+gs = [robot.getDevice(f'gs{i}') for i in range(3)] #
+for sensor in gs: #
+    sensor.enable(timestep) #
 
-leftMotor = robot.getDevice('left wheel motor')
-rightMotor = robot.getDevice('right wheel motor')
-leftMotor.setPosition(float('inf'))
-rightMotor.setPosition(float('inf'))
-leftMotor.setVelocity(0.0)
-rightMotor.setVelocity(0.0)
+encoder = [robot.getDevice(name) for name in ['left wheel sensor', 'right wheel sensor']] #
+for enc in encoder: #
+    enc.enable(timestep) #
 
-# Odometry parameters (must match ESP32)
-R = 0.0205  # wheel radius [m] (20.5mm)
-D = 0.052   # wheel base [m] (52mm)
+leftMotor = robot.getDevice('left wheel motor') #
+rightMotor = robot.getDevice('right wheel motor') #
+leftMotor.setPosition(float('inf')) #
+rightMotor.setPosition(float('inf')) #
+leftMotor.setVelocity(0.0) #
+rightMotor.setVelocity(0.0) #
 
-# Pose initialization (must match ESP32)
-x = 0.0
-y = 0.0
-phi = 0.0
+# --- Main Control Loop ---
+last_sent_time = time.time() #
+send_interval = timestep / 1000.0 # Convert timestep to seconds for sending frequency
 
-prev_left_enc = None
-prev_right_enc = None
-current_state = 'forward'
+while robot.step(timestep) != -1: #
+    current_time = time.time() #
 
-def normalize_angle(angle):
-    while angle > math.pi:
-        angle -= 2 * math.pi
-    while angle <= -math.pi:
-        angle += 2 * math.pi
-    return angle
+    # 1. Read sensor data from Webots robot
+    gsValues = [gs[i].getValue() for i in range(3)] #
+    # psValues = [ps[i].getValue() for i in range(8)] # Proximity sensors not used yet by logic, but can be sent
+    encoderValues = [encoder[i].getValue() for i in range(2)] #
 
-while robot.step(timestep) != -1:
-    # Read sensors
-    gsValues = [gs[i].getValue() for i in range(3)]
-    ps0_value = ps[0].getValue()
-    left_enc = encoders[0].getValue()
-    right_enc = encoders[1].getValue()
+    # 2. Send sensor data to Microcontroller
+    # Format: "gs0_val,gs1_val,gs2_val,enc0_val,enc1_val\n"
+    # Ensure data is sent frequently enough for responsive control
+    # Using a fixed interval rather than every timestep to avoid flooding the serial buffer, if necessary
+    # For a timestep of 64ms, this will send at almost every step.
+    if current_time - last_sent_time >= send_interval: #
+        message_to_send = f"{gsValues[0]:.0f},{gsValues[1]:.0f},{gsValues[2]:.0f},{encoderValues[0]:.4f},{encoderValues[1]:.4f}\n" #
+        try:
+            ser.write(message_to_send.encode('utf-8')) #
+            # print(f"Webots Sent: {message_to_send.strip()}") # Uncomment for detailed debug
+        except serial.SerialTimeoutException: #
+            print("WARNING: Serial write timeout. Microcontroller might be busy or disconnected.") #
+        except Exception as e: #
+            print(f"ERROR: Failed to write to serial: {e}") #
+        last_sent_time = current_time #
+
+    # 3. Receive motor commands from Microcontroller
+    leftSpeed = 0.0 #
+    rightSpeed = 0.0 #
+    received_phi = 0.0 # New variable for phi
+    received_robot_state = "" # New variable for robot_state
+
+    if ser.in_waiting: #
+        try:
+            received_bytes = ser.readline() #
+            if received_bytes: #
+                received_str = received_bytes.decode('utf-8').strip() #
+                parts = received_str.split(',') #
+                # EXPECTING 4 PARTS: leftSpeed, rightSpeed, phi, robot_state
+                if len(parts) == 4: #
+                    leftSpeed = float(parts[0]) #
+                    rightSpeed = float(parts[1]) #
+                    received_phi = float(parts[2]) # Parse phi
+                    received_robot_state = parts[3] # Parse robot_state
+                    # Print received phi and state to Webots console
+                    print(f"Webots Received - L:{leftSpeed:.2f}, R:{rightSpeed:.2f}, Phi:{received_phi:.3f}, State:{received_robot_state}")
+                elif len(parts) == 2: # Fallback for old format if needed, but should be 4
+                    leftSpeed = float(parts[0]) #
+                    rightSpeed = float(parts[1]) #
+                    print(f"Webots Received (Old Format) - L:{leftSpeed:.2f}, R:{rightSpeed:.2f}")
+                else:
+                    print(f"WARNING: Received malformed motor command: {received_str}") #
+            # Clear any remaining junk in the buffer
+            ser.flushInput() #
+        except serial.SerialException as e: #
+            print(f"ERROR: Serial read error: {e}") #
+        except UnicodeDecodeError: #
+            print("WARNING: Could not decode received serial data (possibly incomplete or corrupted).") #
+        except ValueError: #
+            print(f"WARNING: Could not convert received data to float/string: {received_str}") #
     
-    dt = timestep / 1000.0  # convert ms to seconds
-    
-    # Initialize previous encoder values at first step
-    if prev_left_enc is None:
-        prev_left_enc = left_enc
-        prev_right_enc = right_enc
-        continue  # skip first iteration
+    # 4. Act: Set motor speeds in Webots
+    leftMotor.setVelocity(leftSpeed) #
+    rightMotor.setVelocity(rightSpeed) #
 
-    # Calculate delta encoders
-    delta_left = left_enc - prev_left_enc
-    delta_right = right_enc - prev_right_enc
-
-    # Update previous encoder values
-    prev_left_enc = left_enc
-    prev_right_enc = right_enc
-
-    # Calculate wheel angular velocities (rad/s)
-    wl = delta_left / dt
-    wr = delta_right / dt
-
-    # Compute linear and angular velocity of robot
-    u = R / 2.0 * (wr + wl)   # linear velocity (m/s)
-    w = R / D * (wr - wl)     # angular velocity (rad/s)
-
-    # Update pose using improved integration
-    phi_new = normalize_angle(phi + w * dt)
-    avg_phi = (phi + phi_new) / 2  # use average angle for better position integration
-    delta_x = u * math.cos(avg_phi) * dt
-    delta_y = u * math.sin(avg_phi) * dt
-    
-    x += delta_x
-    y += delta_y
-    phi = phi_new
-
-    # Compose sensor flags (0=line detected, 1=no line)
-    line_right = gsValues[0] > 600
-    line_center = gsValues[1] > 600
-    line_left = gsValues[2] > 600
-    obstacle = ps0_value > 80
-
-    # Create message with format: "LLCR|LEFT_ENC,RIGHT_ENC,DT"
-    message = ''
-    message += '1' if line_left else '0'
-    message += '1' if line_center else '0'
-    message += '1' if line_right else '0'
-    message += '1' if obstacle else '0'
-    message += f'|{left_enc:.4f},{right_enc:.4f},{dt:.4f}\n'
-    
-    # Send to ESP32
-    ser.write(message.encode('utf-8'))
-
-    # Read commands from ESP32
-    if ser.in_waiting:
-        value = ser.readline().decode('utf-8').strip()
-        if value in ['forward', 'turn_right', 'turn_left', 'stop']:
-            current_state = value
-
-    # Set motor speeds according to state
-    if current_state == 'forward':
-        leftSpeed = speed
-        rightSpeed = speed
-    elif current_state == 'turn_right':
-        leftSpeed = 0.5 * speed
-        rightSpeed = 0
-    elif current_state == 'turn_left':
-        leftSpeed = 0
-        rightSpeed = 0.5 * speed
-    elif current_state == 'stop':
-        leftSpeed = 0
-        rightSpeed = 0
-
-    leftMotor.setVelocity(leftSpeed)
-    rightMotor.setVelocity(rightSpeed)
-
-    # Print only the estimated pose (no ground truth needed in HiL)
-    print(f'Odometry: x={x:.4f}, y={y:.4f}, phi={phi:.4f}')
-
-ser.close()
+# Close serial port when Webots simulation ends
+ser.close() #
+print("Webots controller stopped and serial port closed.") #
