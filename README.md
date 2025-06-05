@@ -86,13 +86,13 @@ Follow these steps to set up and run the HIL simulation:
 
 3.  **Observe Robot Behavior**:
     * The robot in the Webots simulation should start moving, following the line, detecting intersections, and executing turns as dictated by the logic running on the ESP32.
-    * The robot is programmed to navigate a predefined grid map from `P3` to `P8`.
+    * The robot is programmed to navigate a predefined grid map from `P3` to `P8`. You can change these nodes to whichever once you'd like.
 
 ### 3. Expected Result
 
 Upon successful setup and execution, the robot in the Webots simulation will:
 
-* **Initialize Heading**: Set its initial heading (`phi`) based on the first segment of the calculated path from `P3` to `P8`.
+* **Initialize Heading**: Set its initial heading (`phi`) based on the first segment of the calculated path from `P3` to `P8` or any other nodes if so desired.
 * **Line Follow**: Use its ground sensors to follow the white lines on the track.
 * **Detect Intersections**: Identify intersections based on multiple ground sensors detecting the line simultaneously.
 * **Path Navigation**: At intersections, the robot will update its `current_node` and determine the `direction_needed` to the `next_node` in the Dijkstra-calculated path.
