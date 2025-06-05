@@ -20,7 +20,7 @@ except serial.SerialException as e:
     # Exit Webots simulation gracefully or handle error appropriately
     raise SystemExit(e) # Exit the controller if serial fails
 
-# --- Robot Controller Setup (copy from Obstakeldetectie_try.py) ---
+# --- Robot Controller Setup ---
 MAX_SPEED = 6.28 
 
 robot = Robot() 
